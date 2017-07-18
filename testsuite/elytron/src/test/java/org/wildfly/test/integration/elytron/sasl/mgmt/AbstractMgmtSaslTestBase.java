@@ -86,7 +86,7 @@ public abstract class AbstractMgmtSaslTestBase {
     protected static final String DIGEST_ALGORITHM_SHA256 = "digest-sha-256";
     protected static final String DIGEST_ALGORITHM_SHA512 = "digest-sha-512";
 
-    protected static final int CONNECTION_TIMEOUT_IN_MS = TimeoutUtil.adjust(6 * 1000);
+    protected static final int CONNECTION_TIMEOUT_IN_MS = TimeoutUtil.adjust(600 * 1000);
 
     protected static final Provider PROVIDER_ELYTRON = new WildFlyElytronProvider();
 

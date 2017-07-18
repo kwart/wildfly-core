@@ -29,18 +29,13 @@ import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.List;
 
-import javax.net.ssl.KeyManager;
-import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509ExtendedKeyManager;
 import javax.net.ssl.X509TrustManager;
 
 import org.apache.commons.io.FileUtils;
-import org.jboss.as.controller.client.ModelControllerClient;
-import org.jboss.as.test.integration.management.util.CLIWrapper;
 import org.jboss.as.test.integration.security.common.CoreUtils;
 import org.jboss.as.test.integration.security.common.SecurityTestConstants;
 import org.junit.Test;
@@ -60,9 +55,11 @@ import org.wildfly.test.security.common.TestRunnerConfigSetupTask;
 import org.wildfly.test.security.common.elytron.CliPath;
 import org.wildfly.test.security.common.elytron.ConfigurableElement;
 import org.wildfly.test.security.common.elytron.ConstantPermissionMapper;
+import org.wildfly.test.security.common.elytron.ConstantPrincipalTransformer;
 import org.wildfly.test.security.common.elytron.CredentialReference;
 import org.wildfly.test.security.common.elytron.FileSystemRealm;
 import org.wildfly.test.security.common.elytron.MechanismConfiguration;
+import org.wildfly.test.security.common.elytron.MechanismConfiguration.Builder;
 import org.wildfly.test.security.common.elytron.PermissionRef;
 import org.wildfly.test.security.common.elytron.SaslFilter;
 import org.wildfly.test.security.common.elytron.SimpleConfigurableSaslServerFactory;
@@ -73,25 +70,34 @@ import org.wildfly.test.security.common.elytron.SimpleSecurityDomain;
 import org.wildfly.test.security.common.elytron.SimpleSecurityDomain.SecurityDomainRealm;
 import org.wildfly.test.security.common.elytron.SimpleServerSslContext;
 import org.wildfly.test.security.common.elytron.SimpleTrustManager;
+import org.wildfly.test.security.common.elytron.TrustedDomainsConfigurator;
 import org.wildfly.test.security.common.other.SimpleMgmtNativeInterface;
 import org.wildfly.test.security.common.other.SimpleSocketBinding;
 
 /**
+ * Tests for Elytron SCRAM-*-PLUS SASL mechanisms. The test configuration allows all SCRAM mechanisms on the server side
+ * ({@code SCRAM-*}) and configures server SSL context so the channel binding is possible. For the *-PLUS mechanisms
+ * is used pre-realm-principal-transformer, so the authentication results in another identity than for non-plus mechanisms.
+ * <p>
+ * The test methods checks different client side configurations.
+ * </p>
  *
  * @author Josef Cacek
  */
 @RunWith(WildflyTestRunner.class)
-@ServerSetup({ PlusSaslTestCase.KeyMaterialSetup.class, PlusSaslTestCase.ServerSetup.class })
-public class PlusSaslTestCase {
+@ServerSetup({ ScramPlusMgmtSaslTestCase.KeyMaterialSetup.class, ScramPlusMgmtSaslTestCase.ServerSetup.class })
+public class ScramPlusMgmtSaslTestCase {
 
-    private static final String NAME = PlusSaslTestCase.class.getSimpleName();
+    private static final String NAME = ScramPlusMgmtSaslTestCase.class.getSimpleName();
+    protected static final String PLUS_TRANSFORMER = "plusTransformer";
     protected static final String USERNAME = "guest";
-    protected static final String PASSWORD_SFX = "-pwd";
+    protected static final String PASSWORD = "guest-pwd";
+    protected static final String USERNAME_CLIENT = "client";
 
     private static final File WORK_DIR;
     static {
         try {
-            WORK_DIR = Files.createTempDirectory("external-").toFile();
+            WORK_DIR = Files.createTempDirectory("scramplus-").toFile();
         } catch (IOException e) {
             throw new RuntimeException("Unable to create temporary folder", e);
         }
@@ -99,11 +105,7 @@ public class PlusSaslTestCase {
 
     private static final File SERVER_KEYSTORE_FILE = new File(WORK_DIR, SecurityTestConstants.SERVER_KEYSTORE);
     private static final File SERVER_TRUSTSTORE_FILE = new File(WORK_DIR, SecurityTestConstants.SERVER_TRUSTSTORE);
-    private static final File CLIENT_KEYSTORE_FILE = new File(WORK_DIR, SecurityTestConstants.CLIENT_KEYSTORE);
     private static final File CLIENT_TRUSTSTORE_FILE = new File(WORK_DIR, SecurityTestConstants.CLIENT_TRUSTSTORE);
-    private static final File UNTRUSTED_STORE_FILE = new File(WORK_DIR, SecurityTestConstants.UNTRUSTED_KEYSTORE);
-
-    // private static final String MECHANISM = "EXTERNAL";
 
     /**
      * Tests that client is able to use mechanism when server allows it.
@@ -111,12 +113,12 @@ public class PlusSaslTestCase {
     @Test
     public void testPlusMechanismPasses() throws Exception {
         AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
-                .setSaslMechanismSelector(SaslMechanismSelector.fromString("#PLUS")).useName(USERNAME)
-                .usePassword(USERNAME + PASSWORD_SFX);
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("#PLUS")).useName(USERNAME).usePassword(PASSWORD);
 
         SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
                 .build();
-        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl).run(() -> assertWhoAmI("guest"));
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+                .run(() -> assertWhoAmI(USERNAME_CLIENT));
     }
 
     /**
@@ -126,11 +128,12 @@ public class PlusSaslTestCase {
     public void testFamilyMechanismPasses() throws Exception {
         AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
                 .setSaslMechanismSelector(SaslMechanismSelector.fromString("#FAMILY(SCRAM)")).useName(USERNAME)
-                .usePassword(USERNAME + PASSWORD_SFX);
+                .usePassword(PASSWORD);
 
         SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
                 .build();
-        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl).run(() -> assertWhoAmI("guest"));
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+                .run(() -> assertWhoAmI(USERNAME_CLIENT));
     }
 
     /**
@@ -140,28 +143,145 @@ public class PlusSaslTestCase {
     public void testFamilyMechanismNoSslTrustFails() throws Exception {
         AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
                 .setSaslMechanismSelector(SaslMechanismSelector.fromString("#FAMILY(SCRAM)")).useName(USERNAME)
-                .usePassword(USERNAME + PASSWORD_SFX);
+                .usePassword(PASSWORD);
 
         AuthenticationContext.empty().with(MatchRule.ALL, authCfg).run(
                 () -> assertAuthenticationFails("Connection without trustmanager configured should fail", SSLException.class));
     }
 
     /**
-     * Get the key manager backed by the specified key store.
-     *
-     * @return the initialized key manager.
+     * Tests that authentication fails for non-existing SASL mechanism name.
      */
-    private static X509ExtendedKeyManager getKeyManager(final File ksFile) throws Exception {
-        KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-        keyManagerFactory.init(loadKeyStore(ksFile), KEYSTORE_PASSWORD.toCharArray());
+    @Test
+    public void testNonexistingSaslMechFail() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-WHATEVER-PLUS")).useName(USERNAME)
+                .usePassword(PASSWORD);
 
-        for (KeyManager current : keyManagerFactory.getKeyManagers()) {
-            if (current instanceof X509ExtendedKeyManager) {
-                return (X509ExtendedKeyManager) current;
-            }
-        }
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+        .run(() -> assertAuthenticationFails("Connection through unexisting SASL mechanism should fail."));
+    }
 
-        throw new IllegalStateException("Unable to obtain X509ExtendedKeyManager.");
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-1.
+     */
+    @Test
+    public void testSha1Pass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-1")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+                .run(() -> assertWhoAmI(USERNAME));
+    }
+
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-1-PLUS.
+     */
+    @Test
+    public void testSha1PlusPass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-1-PLUS")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+                .run(() -> assertWhoAmI(USERNAME_CLIENT));
+    }
+
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-256.
+     */
+    @Test
+    public void testSha256Pass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-256")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+        .run(() -> assertWhoAmI(USERNAME));
+    }
+
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-256-PLUS.
+     */
+    @Test
+    public void testSha256PlusPass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-256-PLUS")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+        .run(() -> assertWhoAmI(USERNAME_CLIENT));
+    }
+
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-384.
+     */
+    @Test
+    public void testSha384Pass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-384")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+        .run(() -> assertWhoAmI(USERNAME));
+    }
+
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-384-PLUS.
+     */
+    @Test
+    public void testSha384PlusPass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-384-PLUS")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+        .run(() -> assertWhoAmI(USERNAME_CLIENT));
+    }
+
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-512.
+     */
+    @Test
+    public void testSha512Pass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-512")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+        .run(() -> assertWhoAmI(USERNAME));
+    }
+
+    /**
+     * Tests that authentication is possible using SCRAM-SHA-512-PLUS.
+     */
+    @Test
+    public void testSha512PlusPass() throws Exception {
+        AuthenticationConfiguration authCfg = AuthenticationConfiguration.empty()
+                .setSaslMechanismSelector(SaslMechanismSelector.fromString("SCRAM-SHA-512-PLUS")).useName(USERNAME)
+                .usePassword(PASSWORD);
+
+        SecurityFactory<SSLContext> ssl = new SSLContextBuilder().setClientMode(true).setTrustManager(getTrustManager())
+                .build();
+        AuthenticationContext.empty().with(MatchRule.ALL, authCfg).withSsl(MatchRule.ALL, ssl)
+        .run(() -> assertWhoAmI(USERNAME_CLIENT));
     }
 
     /**
@@ -220,37 +340,31 @@ public class PlusSaslTestCase {
                     SimpleTrustManager.builder().withName("server-trustmanager").withKeyStore("server-truststore").build());
 
             // Realms
-            // elements.add(KeyStoreRealm.builder().withName(NAME).withKeyStore("server-truststore").build());
-            elements.add(FileSystemRealm.builder().withName(NAME).withUser(USERNAME, USERNAME + PASSWORD_SFX).build());
+            elements.add(FileSystemRealm.builder().withName(NAME).withUser(USERNAME, PASSWORD)
+                    .withUser(USERNAME_CLIENT, PASSWORD).build());
+
+            // PrincipalTransformer for plus mechanisms
+            elements.add(
+                    ConstantPrincipalTransformer.builder().withName(PLUS_TRANSFORMER).withConstant(USERNAME_CLIENT).build());
 
             // Domain
             elements.add(SimpleSecurityDomain.builder().withName(NAME).withDefaultRealm(NAME).withPermissionMapper(NAME)
                     .withRealms(SecurityDomainRealm.builder().withRealm(NAME).build()).build());
-            elements.add(new ConfigurableElement() {
-                @Override
-                public void create(ModelControllerClient client, CLIWrapper cli) throws Exception {
-                    cli.sendLine(String.format(
-                            "/subsystem=elytron/security-domain=ManagementDomain:write-attribute(name=trusted-security-domains, value=[%s])",
-                            NAME));
-                }
-
-                @Override
-                public void remove(ModelControllerClient client, CLIWrapper cli) throws Exception {
-                    cli.sendLine(
-                            "/subsystem=elytron/security-domain=ManagementDomain:undefine-attribute(name=trusted-security-domains)");
-                }
-
-                @Override
-                public String getName() {
-                    return "domain-trust";
-                }
-            });
+            elements.add(
+                    TrustedDomainsConfigurator.builder().withName("ManagementDomain").withTrustedSecurityDomains(NAME).build());
 
             // SASL Authentication
+            Builder plusMechsConfig = MechanismConfiguration.builder().withPreRealmPrincipalTransformer(PLUS_TRANSFORMER);
+
             elements.add(SimpleConfigurableSaslServerFactory.builder().withName(NAME).withSaslServerFactory("elytron")
                     .addFilter(SaslFilter.builder().withPatternFilter("SCRAM-*").build()).build());
             elements.add(SimpleSaslAuthenticationFactory.builder().withName(NAME).withSaslServerFactory(NAME)
-                    .withSecurityDomain(NAME).addMechanismConfiguration(MechanismConfiguration.builder().build()).build());
+                    .withSecurityDomain(NAME)
+                    .addMechanismConfiguration(plusMechsConfig.withMechanismName("SCRAM-SHA-1-PLUS").build())
+                    .addMechanismConfiguration(plusMechsConfig.withMechanismName("SCRAM-SHA-256-PLUS").build())
+                    .addMechanismConfiguration(plusMechsConfig.withMechanismName("SCRAM-SHA-384-PLUS").build())
+                    .addMechanismConfiguration(plusMechsConfig.withMechanismName("SCRAM-SHA-512-PLUS").build())
+                    .addMechanismConfiguration(MechanismConfiguration.builder().build()).build());
 
             // SSLContext
             elements.add(SimpleServerSslContext.builder().withName(NAME).withKeyManagers("server-keymanager")
